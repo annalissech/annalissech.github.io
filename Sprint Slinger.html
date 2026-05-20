@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Sprint Slinger</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #0f172a; 
+            touch-action: none; 
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        }
+        #game-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+        
+        .ui-overlay {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        
+        .pointer-events-auto { pointer-events: auto; }
+        .hidden { display: none !important; }
+        
+        @keyframes pop {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.2); color: #fff; }
+            100% { transform: scale(1); }
+        }
+        .animate-pop { animation: pop 0.3s ease-out; }
+    </style>
+</head>
+<body>
+
+    <canvas id="game-canvas"></canvas>
+
+    <div id="hud" class="ui-overlay p-6 hidden">
+        <div class="flex justify-between items-start">
+            <div class="bg-slate-800/80 backdrop-blur text-white p-4 rounded-xl border border-slate-700 shadow-xl transition-all duration-300">
+                <h1 class="text-xs uppercase tracking-widest text-slate-400 font-bold mb-1">Total Capacity</h1>
+                <div class="text-4xl font-black text-emerald-400 flex items-baseline gap-1">
+                    <span id="score-display">0</span>
+                    <span class="text-lg text-slate-500 font-medium">SP</span>
+                </div>
+            </div>
+            <div class="bg-slate-800/80 backdrop-blur text-white p-4 rounded-xl border border-slate-700 shadow-xl text-right">
+                <h2 class="text-xs uppercase tracking-widest text-slate-400 font-bold mb-1">Blocks Left</h2>
+                <div class="text-3xl font-black text-blue-400" id="turns-display">5/5</div>
+            </div>
+        </div>
+        
+        <div class="flex flex-col items-center gap-4 pb-10">
+            <div id="instruction-text" class="text-center text-slate-400/80 text-sm md:text-base font-medium animate-pulse tracking-wide uppercase transition-opacity duration-300">
+                Drag the block back to aim, release to fling!
+            </div>
+            <button id="quick-restart-btn" class="px-6 py-2 bg-slate-800/80 hover:bg-slate-700 active:bg-slate-600 border border-slate-600 text-slate-300 text-sm uppercase tracking-widest font-bold rounded-lg shadow-lg transition-colors pointer-events-auto backdrop-blur">
+                Restart Round
+            </button>
+        </div>
+    </div>
+
+    <!-- Floating Score Indicators Container -->
+    <div id="floating-scores" class="absolute inset-0 pointer-events-none overflow-hidden"></div>
+
+    <div id="start-screen" class="absolute inset-0 bg-slate-900/90 backdrop-blur-sm flex flex-col items-center justify-center pointer-events-auto z-50">
+        <div class="text-center max-w-md mx-auto p-8 bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl">
+            <h1 class="text-4xl font-black text-white mb-2 tracking-tight">Sprint <span class="text-blue-500">Slinger</span></h1>
+            <p class="text-slate-400 mb-6 leading-relaxed">
+                Fling Story Point blocks onto their matching platforms!<br><br>
+                You have <strong>5 blocks</strong> per game. Land an 8 on an 8 platform to score, miss and you get nothing. Get the highest total!
+            </p>
+            <button id="start-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-8 rounded-xl shadow-lg hover:shadow-blue-500/25 transition-all transform hover:-translate-y-1 text-lg uppercase tracking-wider">
+                Start Planning
+            </button>
+        </div>
+    </div>
+
+    <div id="game-over-screen" class="absolute inset-0 bg-slate-900/90 backdrop-blur-md flex flex-col items-center justify-center pointer-events-auto z-50 hidden">
+        <div class="text-center max-w-md mx-auto p-8 bg-slate-800 border border-slate-600 rounded-2xl shadow-2xl">
+            <h1 class="text-4xl font-black text-white mb-2">Sprint Planned!</h1>
+            <p class="text-slate-300 mb-6">Here is your final team capacity.</p>
+            
+            <div class="bg-slate-900 rounded-xl p-6 mb-8 border border-slate-700 shadow-inner">
+                <p class="text-sm uppercase tracking-widest text-slate-400 font-bold mb-1">Final Score</p>
+                <div class="text-6xl font-black text-emerald-400"><span id="final-score">0</span></div>
+            </div>
+            
+            <button id="restart-btn" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 px-8 rounded-xl shadow-lg transition-all transform hover:-translate-y-1 text-lg uppercase tracking-wider">
+                Play Again
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const Engine = Matter.Engine,
+              Render = Matter.Render,
+              Runner = Matter.Runner,
+              Bodies = Matter.Bodies,
+              Body = Matter.Body,
+              Composite = Matter.Composite,
+              Query = Matter.Query;
+
+        // --- Game State ---
+        let engine;
+        let canvas, ctx;
+        let animationFrameId;
+        
+        const MAX_TURNS = 5;
+        let gameState = 'start'; // 'start', 'aiming', 'inflight', 'settling', 'gameover'
+        let score = 0;
+        let turnsLeft = MAX_TURNS;
+        let currentBlock = null;
+        let platforms = [];
+        
+        let launchAnchor = { x: 150, y: 0 }; // Y set dynamically
+        let dragPosition = { x: 0, y: 0 };
+        let settleTimer = 0;
+        let upcomingBlocks = [];
+
+        // --- Configuration ---
+        const POINT_VALUES = [1, 2, 3, 5, 8];
+        const SIZES = { 1: 30, 2: 40, 3: 50, 5: 64, 8: 80 };
+        const COLORS = {
+            1: '#60a5fa', // blue-400
+            2: '#34d399', // emerald-400
+            3: '#fbbf24', // amber-400
+            5: '#f97316', // orange-500
+            8: '#ef4444'  // red-500
+        };
+
+        const MAX_DRAG = 150;
+        const LAUNCH_MULTIPLIER = 0.18; // Tune launch power
+
+        // --- DOM Elements ---
+        const ui = {
+            start: document.getElementById('start-screen'),
+            over: document.getElementById('game-over-screen'),
+            hud: document.getElementById('hud'),
+            score: document.getElementById('score-display'),
+            finalScore: document.getElementById('final-score'),
+            turns: document.getElementById('turns-display'),
+            instruction: document.getElementById('instruction-text'),
+            floatingScores: document.getElementById('floating-scores')
+        };
+
+        window.onload = () => {
+            canvas = document.getElementById('game-canvas');
+            ctx = canvas.getContext('2d');
+            
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+
+            document.getElementById('start-btn').addEventListener('click', startGame);
+            document.getElementById('restart-btn').addEventListener('click', startGame);
+            document.getElementById('quick-restart-btn').addEventListener('click', startGame);
+
+            setupInputHandlers();
+            requestAnimationFrame(renderLoop);
+        };
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            launchAnchor.y = canvas.height * 0.7; // Anchor on lower left
+        }
+
+        function startGame() {
+            gameState = 'aiming';
+            score = 0;
+            turnsLeft = MAX_TURNS;
+            ui.floatingScores.innerHTML = '';
+            updateUI();
+            
+            // Set up the block pool with exactly one of each
+            upcomingBlocks = [1, 2, 3, 5, 8];
+            // Randomize the order they appear
+            for (let i = upcomingBlocks.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [upcomingBlocks[i], upcomingBlocks[j]] = [upcomingBlocks[j], upcomingBlocks[i]];
+            }
+            
+            ui.start.classList.add('hidden');
+            ui.over.classList.add('hidden');
+            ui.hud.classList.remove('hidden');
+            ui.instruction.style.opacity = '1';
+            
+            if (engine) {
+                Matter.Engine.clear(engine);
+            }
+            engine = Engine.create();
+            engine.world.gravity.y = 1.0;
+
+            createEnvironment();
+            spawnBlock();
+        }
+
+        function createEnvironment() {
+            platforms = [];
+            
+            // Ground floor to catch misses
+            const ground = Bodies.rectangle(canvas.width / 2, canvas.height + 50, canvas.width * 2, 100, { 
+                isStatic: true, friction: 1, restitution: 0.1 
+            });
+            Composite.add(engine.world, ground);
+
+            // Left Wall behind slingshot
+            const wall = Bodies.rectangle(-50, canvas.height/2, 100, canvas.height, { isStatic: true });
+            Composite.add(engine.world, wall);
+
+            // Generate Platforms on the right side
+            const pWidth = 140;
+            const pHeight = 20;
+            const startX = canvas.width * 0.45;
+            const endX = canvas.width * 0.9;
+            
+            // Layout platforms in a staggered arrangement
+            const layouts = [
+                { points: 8, x: endX, y: canvas.height * 0.25 },
+                { points: 5, x: startX + (endX-startX)*0.5, y: canvas.height * 0.45 },
+                { points: 3, x: endX - 50, y: canvas.height * 0.65 },
+                { points: 2, x: startX, y: canvas.height * 0.8 },
+                { points: 1, x: (startX + launchAnchor.x) / 2, y: canvas.height * 0.9 }
+            ];
+
+            layouts.forEach(layout => {
+                // Main platform ledge
+                const pBody = Bodies.rectangle(layout.x, layout.y, pWidth, pHeight, {
+                    isStatic: true,
+                    friction: 0.9,
+                    restitution: 0.1,
+                    customColor: '#334155', // slate-700
+                    targetPoints: layout.points
+                });
+
+                // Small bumpers on the edges to help catch blocks
+                const bumperL = Bodies.rectangle(layout.x - pWidth/2 + 5, layout.y - 15, 10, 30, { isStatic: true });
+                const bumperR = Bodies.rectangle(layout.x + pWidth/2 - 5, layout.y - 15, 10, 30, { isStatic: true });
+
+                // Sensor region directly above the platform for scoring
+                const sensor = Bodies.rectangle(layout.x, layout.y - 40, pWidth - 20, 60, {
+                    isStatic: true,
+                    isSensor: true,
+                    targetPoints: layout.points,
+                    label: 'platformSensor'
+                });
+
+                platforms.push({ body: pBody, points: layout.points, sensor: sensor });
+                Composite.add(engine.world, [pBody, bumperL, bumperR, sensor]);
+            });
+        }
+
+        function spawnBlock() {
+            if (turnsLeft <= 0) {
+                endGame();
+                return;
+            }
+
+            // Get the next block from our randomized pool
+            let points = upcomingBlocks.pop();
+            const size = SIZES[points];
+
+            currentBlock = Bodies.rectangle(launchAnchor.x, launchAnchor.y, size, size, {
+                friction: 0.6,
+                restitution: 0.2,
+                density: 0.005,
+                customColor: COLORS[points],
+                storyPoints: points,
+                size: size,
+                label: 'storyBlock',
+                // Keep it fixed in the air until fired
+                isStatic: true 
+            });
+
+            Composite.add(engine.world, currentBlock);
+            gameState = 'aiming';
+            ui.instruction.style.opacity = '1';
+        }
+
+        function updateUI() {
+            ui.score.innerText = score;
+            ui.score.classList.remove('animate-pop');
+            void ui.score.offsetWidth; 
+            ui.score.classList.add('animate-pop');
+            ui.turns.innerText = `${turnsLeft}/${MAX_TURNS}`;
+        }
+
+        function showFloatingScore(points, x, y, isMiss = false) {
+            const el = document.createElement('div');
+            el.className = `absolute text-3xl md:text-5xl font-black ${isMiss ? 'text-red-500' : 'text-emerald-400'} drop-shadow-lg`;
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+            el.style.transform = 'translate(-50%, -50%)';
+            el.style.animation = 'floatUp 1.5s ease-out forwards';
+            el.innerText = isMiss ? 'MISS' : `+${points}`;
+            
+            if (!document.getElementById('float-styles')) {
+                const style = document.createElement('style');
+                style.id = 'float-styles';
+                style.innerHTML = `
+                    @keyframes floatUp {
+                        0% { opacity: 1; transform: translate(-50%, -50%) scale(0.5); }
+                        20% { transform: translate(-50%, -100%) scale(1.2); }
+                        100% { opacity: 0; transform: translate(-50%, -200%) scale(1); }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+            
+            ui.floatingScores.appendChild(el);
+            setTimeout(() => el.remove(), 1500);
+        }
+
+        function endGame() {
+            gameState = 'gameover';
+            ui.hud.classList.add('hidden');
+            ui.over.classList.remove('hidden');
+            ui.finalScore.innerText = score;
+        }
+
+        // --- Input & Slingshot ---
+        function setupInputHandlers() {
+            window.addEventListener('pointerdown', (e) => {
+                if (gameState !== 'aiming' || !currentBlock) return;
+                
+                // Only grab if clicking relatively close to the anchor/block
+                const dist = Math.hypot(e.clientX - launchAnchor.x, e.clientY - launchAnchor.y);
+                if (dist < 150) {
+                    dragPosition = { x: e.clientX, y: e.clientY };
+                    ui.instruction.style.opacity = '0'; // hide hint
+                }
+            });
+
+            window.addEventListener('pointermove', (e) => {
+                if (gameState === 'aiming' && dragPosition.x !== 0) {
+                    let dx = e.clientX - launchAnchor.x;
+                    let dy = e.clientY - launchAnchor.y;
+                    
+                    // Clamp drag distance
+                    const dist = Math.hypot(dx, dy);
+                    if (dist > MAX_DRAG) {
+                        dx = (dx / dist) * MAX_DRAG;
+                        dy = (dy / dist) * MAX_DRAG;
+                    }
+
+                    // Move the block to the drag position
+                    dragPosition = { x: launchAnchor.x + dx, y: launchAnchor.y + dy };
+                    Body.setPosition(currentBlock, dragPosition);
+                }
+            });
+
+            window.addEventListener('pointerup', (e) => {
+                if (gameState === 'aiming' && dragPosition.x !== 0) {
+                    
+                    // Vector from drag pos back to anchor (the "rubber band" pull)
+                    const dx = launchAnchor.x - dragPosition.x;
+                    const dy = launchAnchor.y - dragPosition.y;
+
+                    // If barely pulled back, snap it back to anchor
+                    if (Math.hypot(dx, dy) < 20) {
+                        dragPosition = {x: 0, y: 0};
+                        Body.setPosition(currentBlock, launchAnchor);
+                        return;
+                    }
+
+                    // Launch!
+                    Body.setStatic(currentBlock, false);
+                    Body.setVelocity(currentBlock, { 
+                        x: dx * LAUNCH_MULTIPLIER, 
+                        y: dy * LAUNCH_MULTIPLIER 
+                    });
+                    
+                    // Add slight random spin for visual flair
+                    Body.setAngularVelocity(currentBlock, (Math.random() - 0.5) * 0.2);
+
+                    gameState = 'inflight';
+                    dragPosition = { x: 0, y: 0 };
+                    settleTimer = 0;
+                    turnsLeft--;
+                    updateUI();
+                }
+            });
+        }
+
+        // --- Core Loop ---
+        function renderLoop() {
+            animationFrameId = requestAnimationFrame(renderLoop);
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (gameState === 'start' || gameState === 'gameover') return;
+
+            // Step Physics
+            Engine.update(engine, 1000 / 60);
+
+            // Check if block has settled or fallen
+            if (gameState === 'inflight') {
+                const speed = currentBlock.speed;
+                const angularSpeed = Math.abs(currentBlock.angularVelocity);
+                
+                // If practically stopped
+                if (speed < 0.2 && angularSpeed < 0.05) {
+                    settleTimer++;
+                    if (settleTimer > 40) { // Settle delay
+                        evaluateThrow();
+                    }
+                } else {
+                    settleTimer = 0;
+                }
+
+                // If fell way off screen
+                if (currentBlock.position.y > canvas.height + 200 || currentBlock.position.x > canvas.width + 200) {
+                    evaluateThrow();
+                }
+            }
+
+            drawWorld();
+            
+            // Draw Trajectory and Slingshot band when aiming
+            if (gameState === 'aiming' && dragPosition.x !== 0) {
+                drawSlingshotAndTrajectory();
+            }
+        }
+
+        function evaluateThrow() {
+            gameState = 'settling';
+            let scored = false;
+
+            // Get all sensor bodies
+            const sensors = platforms.map(p => p.sensor);
+            
+            // Check if currentBlock is overlapping any platform sensors
+            const collisions = Query.collides(currentBlock, sensors);
+            
+            if (collisions.length > 0) {
+                // It's touching at least one sensor
+                const sensorHit = collisions[0].bodyA.isSensor ? collisions[0].bodyA : collisions[0].bodyB;
+                
+                // Check if the platform's target points match the block's points
+                if (sensorHit.targetPoints === currentBlock.storyPoints) {
+                    score += currentBlock.storyPoints;
+                    scored = true;
+                    showFloatingScore(currentBlock.storyPoints, currentBlock.position.x, currentBlock.position.y, false);
+                    updateUI();
+                }
+            }
+
+            if (!scored) {
+                // If it landed somewhere but didn't match the target, it's a miss
+                showFloatingScore(0, currentBlock.position.x, currentBlock.position.y, true);
+            }
+
+            // Convert block to a scenery body so it stays but doesn't interact with the *next* block directly
+            // Optional: you could leave it as a regular body to create chaos! We'll leave it as physical so they stack.
+            currentBlock.label = 'settledBlock'; 
+            
+            setTimeout(spawnBlock, 1000);
+        }
+
+        // --- Rendering ---
+        function drawWorld() {
+            // Draw subtle anchor point for slingshot
+            ctx.beginPath();
+            ctx.arc(launchAnchor.x, launchAnchor.y, 15, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([4, 4]);
+            ctx.stroke();
+            ctx.setLineDash([]); // reset dash
+
+            const bodies = Composite.allBodies(engine.world);
+
+            for (let i = 0; i < bodies.length; i++) {
+                const body = bodies[i];
+                if (body.isSensor) continue; // Don't draw invisible sensors
+
+                ctx.beginPath();
+                const vertices = body.vertices;
+                ctx.moveTo(vertices[0].x, vertices[0].y);
+                for (let j = 1; j < vertices.length; j++) {
+                    ctx.lineTo(vertices[j].x, vertices[j].y);
+                }
+                ctx.closePath();
+
+                ctx.fillStyle = body.customColor || (body.isStatic ? '#1e293b' : '#fff');
+                ctx.fill();
+
+                if (body.label === 'storyBlock' || body.label === 'settledBlock') {
+                    ctx.lineWidth = 3;
+                    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+                    ctx.stroke();
+
+                    // Draw Point Value on Block
+                    ctx.save();
+                    ctx.translate(body.position.x, body.position.y);
+                    ctx.rotate(body.angle);
+                    ctx.fillStyle = '#fff';
+                    ctx.font = `900 ${body.size * 0.45}px sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.shadowColor = "rgba(0,0,0,0.5)";
+                    ctx.shadowBlur = 4;
+                    ctx.shadowOffsetX = 1;
+                    ctx.shadowOffsetY = 1;
+                    ctx.fillText(body.storyPoints, 0, 0);
+                    ctx.restore();
+                }
+            }
+
+            // Draw target numbers on platforms
+            platforms.forEach(p => {
+                ctx.save();
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
+                ctx.font = `900 40px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                // Draw in the background of the platform zone
+                ctx.fillText(p.points, p.body.position.x, p.body.position.y - 40);
+                ctx.restore();
+            });
+        }
+
+        function drawSlingshotAndTrajectory() {
+            // Draw Rubber Band
+            ctx.beginPath();
+            ctx.moveTo(launchAnchor.x, launchAnchor.y);
+            ctx.lineTo(dragPosition.x, dragPosition.y);
+            ctx.strokeStyle = '#64748b'; // slate-500
+            ctx.lineWidth = 6;
+            ctx.stroke();
+
+            // Calculate Launch Vector
+            const dx = launchAnchor.x - dragPosition.x;
+            const dy = launchAnchor.y - dragPosition.y;
+            const vx = dx * LAUNCH_MULTIPLIER;
+            const vy = dy * LAUNCH_MULTIPLIER;
+
+            // Draw Trajectory Arc
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([8, 12]);
+
+            let simX = launchAnchor.x;
+            let simY = launchAnchor.y;
+            let simVx = vx;
+            let simVy = vy;
+            const gravity = engine.world.gravity.y * engine.world.gravity.scale;
+
+            ctx.moveTo(simX, simY);
+
+            // Simulate ~60 frames ahead
+            for (let i = 0; i < 60; i++) {
+                simX += simVx;
+                simY += simVy;
+                simVy += gravity;
+                ctx.lineTo(simX, simY);
+                
+                // Stop drawing line if it hits the ground bounds
+                if (simY > canvas.height) break;
+            }
+            
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+    </script>
+</body>
+</html>
